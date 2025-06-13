@@ -1,0 +1,200 @@
+import cadquery as cq
+import math
+from cadquery import exporters
+
+# Parameters (all dimensions in mm unless noted)
+# Chip dimensions
+chip_length = 30.0     
+chip_width = 20.0      
+base_thickness = 1.5   
+lid_thickness = 1.0    
+
+# Channel specifications
+channel_depth = 0.1    
+channel_width = 0.1    
+main_channel_length = 25.0
+
+# DLD pattern (50µm pitch, 7° angle)
+dld_pitch = 0.05       
+dld_angle_deg = 7      
+dld_angle = math.radians(dld_angle_deg)
+dld_post_size = 0.02   
+
+# Port specifications
+port_diameter = 2.0    
+port_spacing = 9.0     
+port_taper_angle = 15  # degrees
+
+# Bubble trap dimensions
+bubble_trap_diameter = 3.0
+bubble_trap_depth = 0.8
+
+# Create base layer
+base = cq.Workplane("XY").box(chip_length, chip_width, base_thickness)
+
+# =============================================================================
+# 1. Enhanced Microchannel Design with Serpentine Geometry
+# =============================================================================
+def create_serpentine_channel():
+    """Create a serpentine channel with 3 turns"""
+    points = [
+        (-main_channel_length/2 + 5, 0),
+        (-main_channel_length/2 + 5, 3),
+        (-main_channel_length/2 + 10, 3),
+        (-main_channel_length/2 + 10, -3),
+        (-main_channel_length/2 + 15, -3),
+        (-main_channel_length/2 + 15, 0),
+        (main_channel_length/2 - 5, 0)
+    ]
+    
+    channel_path = (
+        cq.Workplane("XZ")
+        .workplane(offset=-chip_width/4)
+        .polyline(points)
+        .val()
+    )
+    
+    channel = (
+        cq.Workplane("XY")
+        .workplane(offset=-base_thickness/2 + channel_depth/2)
+        .center(0, 0)
+        .sweep(channel_path, 
+              cq.Workplane("XY").rect(channel_width, channel_width))
+    )
+    return channel
+
+serpentine_channel = create_serpentine_channel()
+base = base.cut(serpentine_channel)
+
+# =============================================================================
+# 2. Optimized DLD Array with True Lateral Displacement
+# =============================================================================
+def create_optimized_dld_array():
+    rows = int(6 / dld_pitch)  # Cover 6mm y-direction
+    cols = int(15 / dld_pitch)  # Cover 15mm x-direction
+    
+    points = []
+    for row in range(rows):
+        y = -3 + row * dld_pitch
+        x_offset = row * dld_pitch * math.tan(dld_angle)
+        
+        # Alternate row offset for true DLD behavior
+        if row % 2 == 1:
+            x_offset += dld_pitch/2
+            
+        for col in range(cols):
+            x = -7.5 + col * dld_pitch + x_offset
+            if -main_channel_length/2 < x < main_channel_length/2:
+                points.append((x, y))
+    
+    return points
+
+dld_points = create_optimized_dld_array()
+
+dld_pattern = (
+    cq.Workplane("XY")
+    .workplane(offset=-base_thickness/2 + channel_depth/2)
+    .pushPoints(dld_points)
+    .rect(dld_post_size, dld_post_size)
+    .extrude(channel_depth)
+)
+base = base.cut(dld_pattern)
+
+# =============================================================================
+# 3. Enhanced Bubble Traps with Flow Direction Consideration
+# =============================================================================
+def create_bubble_traps():
+    # Primary trap at inlet
+    inlet_trap = (
+        cq.Workplane("XY")
+        .workplane(offset=-base_thickness/2 + bubble_trap_depth/2)
+        .center(-port_spacing/2 - 3, 0)
+        .circle(bubble_trap_diameter/2)
+        .extrude(bubble_trap_depth)
+    
+    # Secondary trap in middle channel
+    mid_trap = (
+        cq.Workplane("XY")
+        .workplane(offset=-base_thickness/2 + bubble_trap_depth/2)
+        .center(0, 0)
+        .circle(bubble_trap_diameter/2)
+        .extrude(bubble_trap_depth)
+    
+    return inlet_trap, mid_trap
+
+inlet_trap, mid_trap = create_bubble_traps()
+base = base.cut(inlet_trap).cut(mid_trap)
+
+# =============================================================================
+# 4. Ports with Tapered Features
+# =============================================================================
+def create_tapered_ports():
+    ports = cq.Workplane("XY")
+    
+    for x_pos in [-port_spacing/2, port_spacing/2]:
+        port = (
+            cq.Workplane("XY")
+            .workplane(offset=-base_thickness/2)
+            .center(x_pos, 0)
+            .circle(port_diameter/2)
+            .workplane(offset=base_thickness)
+            .circle(port_diameter/2 + math.tan(math.radians(port_taper_angle))
+            .loft(combine=False)
+        )
+        ports = ports.union(port)
+    
+    return ports.cut(base)
+
+ports = create_tapered_ports()
+base = base.cut(ports)
+
+# =============================================================================
+# 5. Labeling and Orientation Features
+# =============================================================================
+def add_labels():
+    # Channel ID engraving
+    channel_label = (
+        cq.Workplane("XY")
+        .workplane(offset=base_thickness/2 - 0.1)
+        .center(-10, 3)
+        .text("INLET", 1.5, 0.1)
+    )
+    
+    # Orientation notch
+    orientation_notch = (
+        cq.Workplane("XY")
+        .workplane(offset=base_thickness/2)
+        .center(chip_length/2 - 2, chip_width/2 - 2)
+        .circle(0.5)
+        .extrude(-0.3)
+    )
+    
+    return channel_label, orientation_notch
+
+channel_label, orientation_notch = add_labels()
+base = base.union(channel_label)
+base = base.cut(orientation_notch)
+
+# =============================================================================
+# Final Assembly
+# =============================================================================
+# Create lid with viewing windows
+lid = (
+    cq.Workplane("XY")
+    .box(chip_length, chip_width, lid_thickness)
+    .faces(">Z")
+    .workplane()
+    .rarray(chip_length - 10, chip_width - 10, 2, 2)
+    .rect(5, 5)
+    .cutThruAll()
+    .translate((0, 0, base_thickness/2 + lid_thickness/2))
+)
+
+# Combine components
+chip = base.union(lid)
+
+# Export files
+exporters.export(chip, 'OncoSieve_Chip_Enhanced.step')
+exporters.export(chip, 'OncoSieve_Chip_Enhanced.stl')
+
+print("Design complete. Files exported in STEP and STL formats.")
